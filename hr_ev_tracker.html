@@ -581,11 +581,29 @@ function formatAmerican(odds) {
 
 function normalizePlayerKey(label) {
   return (label || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
     .toLowerCase()
+    .replace(/\b(to\s+hit\s+a?\s*home\s*run|to\s+homer|to\s+record\s+a?\s*home\s*run|home\s*runs?|home\s*run)\b/g, ' ')
+    .replace(/\b(yes|no|over|under|ou|o\/u|alt|alternate)\b/g, ' ')
+    .replace(/\b\d+(\.\d+)?\+?\b/g, ' ')
     .replace(/[.'’`-]/g, '')
     .replace(/\b(jr|sr|ii|iii|iv|v)\b/g, '')
     .replace(/\s+/g, ' ')
     .trim();
+}
+
+function playerKeysMatch(a, b) {
+  if (!a || !b) return false;
+  if (a === b) return true;
+
+  const aTokens = a.split(' ').filter(t => t.length > 1);
+  const bTokens = b.split(' ').filter(t => t.length > 1);
+  if (!aTokens.length || !bTokens.length) return false;
+
+  const overlap = aTokens.filter(t => bTokens.includes(t)).length;
+  const minLen = Math.min(aTokens.length, bTokens.length);
+  return overlap >= minLen;
 }
 
 function getOutcomePlayerLabel(outcome) {
@@ -697,7 +715,7 @@ async function runScan() {
         if (!mkt) continue;
         const o = mkt.outcomes?.find(x => {
           const bookPlayerKey = normalizePlayerKey(getOutcomePlayerLabel(x));
-          if (!bookPlayerKey || bookPlayerKey !== targetPlayerKey) return false;
+          if (!bookPlayerKey || !playerKeysMatch(bookPlayerKey, targetPlayerKey)) return false;
 
           const bookSide = getOutcomeSide(x);
           if (targetSide && bookSide && targetSide !== bookSide) return false;
