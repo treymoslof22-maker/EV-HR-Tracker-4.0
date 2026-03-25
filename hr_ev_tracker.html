@@ -532,6 +532,29 @@ function isSingleHomeRunOutcome(outcome) {
   return true;
 }
 
+function extractScrapedEvents(payload) {
+  if (!payload) return [];
+  if (Array.isArray(payload)) return payload;
+  if (Array.isArray(payload.events)) return payload.events;
+  if (Array.isArray(payload.games)) return payload.games;
+  if (payload.data) return extractScrapedEvents(payload.data);
+  if (payload.away_team || payload.home_team || payload.bookmakers) return [payload];
+  return [];
+}
+
+function getEventTeams(event) {
+  const away = event?.away_team || event?.awayTeam || null;
+  const home = event?.home_team || event?.homeTeam || null;
+  if (away && home) return { away, home };
+
+  const name = event?.name || event?.event_name || '';
+  if (typeof name === 'string' && name.includes(' @ ')) {
+    const [a, h] = name.split(' @ ').map(s => s.trim());
+    if (a && h) return { away: a, home: h };
+  }
+  return { away: away || 'Away Team', home: home || 'Home Team' };
+}
+
 function cfg(id) { return document.getElementById(id).value.trim(); }
 document.getElementById('cfg-worker-url').value = CLOUDFLARE_WORKER_URL;
 document.getElementById('cfg-odds-key').value = ODDS_API_KEY;
@@ -617,13 +640,16 @@ async function fetchBetmgmColoradoScrape() {
     const res = await fetch(url.toString());
     if (!res.ok) return [];
     const payload = await res.json();
-    const events = Array.isArray(payload?.events) ? payload.events : [];
+    const events = extractScrapedEvents(payload);
+    if (events.length === 0) log('co.betmgm scrape returned no parsable events payload.', 'error');
 
     return events
-      .map(event => ({
-        id: event.id || `${event.away_team || 'away'}-${event.home_team || 'home'}`,
-        away_team: event.away_team,
-        home_team: event.home_team,
+      .map(event => {
+        const teams = getEventTeams(event);
+        return ({
+        id: event.id || `${teams.away || 'away'}-${teams.home || 'home'}`,
+        away_team: teams.away,
+        home_team: teams.home,
         bookmakers: (event.bookmakers || [])
           .filter(book => normalizeBookKey(book) === 'betmgm')
           .map(book => ({
@@ -643,7 +669,7 @@ async function fetchBetmgmColoradoScrape() {
               }))
               .filter(m => m.outcomes.length > 0)
           }))
-      }))
+      })})
       .filter(event => event.bookmakers.length > 0);
   } catch (e) {
     log(`BetMGM CO scrape failed: ${e.message}`, 'error');
@@ -663,13 +689,16 @@ async function fetchScrapedBookmakerFallback() {
     const res = await fetch(url.toString());
     if (!res.ok) return [];
     const payload = await res.json();
-    const events = Array.isArray(payload?.events) ? payload.events : [];
+    const events = extractScrapedEvents(payload);
+    if (events.length === 0) log('FD/DK scrape returned no parsable events payload.', 'error');
 
     return events
-      .map(event => ({
-        id: event.id || `${event.away_team || 'away'}-${event.home_team || 'home'}`,
-        away_team: event.away_team,
-        home_team: event.home_team,
+      .map(event => {
+        const teams = getEventTeams(event);
+        return ({
+        id: event.id || `${teams.away || 'away'}-${teams.home || 'home'}`,
+        away_team: teams.away,
+        home_team: teams.home,
         bookmakers: (event.bookmakers || [])
           .filter(book => SCRAPE_FALLBACK_BOOKMAKERS.includes(normalizeBookKey(book)))
           .map(book => ({
@@ -689,7 +718,7 @@ async function fetchScrapedBookmakerFallback() {
               }))
               .filter(m => m.outcomes.length > 0)
           }))
-      }))
+      })})
       .filter(event => event.bookmakers.length > 0);
   } catch (e) {
     log(`FD/DK scrape fallback failed: ${e.message}`, 'error');
