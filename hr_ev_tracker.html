@@ -399,6 +399,10 @@
           <label>FanDuel/DK Scrape Endpoint URL</label>
           <input type="text" id="cfg-fddk-scrape-url" value="" placeholder="https://your-scrape-endpoint/fd-dk">
         </div>
+        <div class="field" style="grid-column: 1 / -1;">
+          <label>Scrape API Key (optional)</label>
+          <input type="password" id="cfg-scrape-key" value="" placeholder="Optional key/token for scrape endpoints">
+        </div>
         <div class="field">
           <label>+EV Alert Threshold (%)</label>
           <input type="number" id="cfg-threshold" value="30" min="0" max="30" step="0.5">
@@ -510,6 +514,7 @@ const PUSHOVER_APP_TOKEN = 'az6pk9ipdjj11rqkz7x1kfi28f9ppk';
 const PUSHOVER_USER_KEY = 'u8s29a84uwrrtidoieqj1izetdeq59';
 const BETMGM_SCRAPE_URL = '';
 const FDDK_SCRAPE_URL = '';
+const SCRAPE_API_KEY = '';
 const TRACKED_BOOKMAKERS = ['betmgm', 'fanduel', 'draftkings'];
 const SCRAPE_FALLBACK_BOOKMAKERS = ['fanduel', 'draftkings'];
 const HR_MARKET_KEYS = ['batter_home_runs', 'batter_home_runs_alternate'];
@@ -568,6 +573,7 @@ function getEventTeams(event) {
 async function fetchScrapePayload(action, extraParams = {}, explicitUrl = '') {
   const workerUrl = explicitUrl || cfg('cfg-worker-url') || CLOUDFLARE_WORKER_URL;
   if (!workerUrl) return null;
+  const scrapeKey = cfg('cfg-scrape-key');
 
   const rootUrl = workerUrl.replace(/\/+$/, '');
   const actionVariants = [...new Set([
@@ -580,6 +586,12 @@ async function fetchScrapePayload(action, extraParams = {}, explicitUrl = '') {
 
   for (const actionName of actionVariants) {
     const params = { action: actionName, ...extraParams };
+    if (scrapeKey) {
+      params.apiKey = scrapeKey;
+      params.api_key = scrapeKey;
+      params.key = scrapeKey;
+      params.token = scrapeKey;
+    }
     const query = new URLSearchParams(params).toString();
     const actionPath = `${rootUrl}/${actionName}`;
     const actionPathWithQuery = `${actionPath}?${new URLSearchParams(extraParams).toString()}`;
@@ -599,7 +611,10 @@ async function fetchScrapePayload(action, extraParams = {}, explicitUrl = '') {
         url: workerUrl,
         options: {
           method: 'POST',
-          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          headers: {
+            'Content-Type': 'application/x-www-form-urlencoded',
+            ...(scrapeKey ? { 'x-api-key': scrapeKey, 'authorization': `Bearer ${scrapeKey}` } : {})
+          },
           body: query
         }
       },
@@ -608,7 +623,10 @@ async function fetchScrapePayload(action, extraParams = {}, explicitUrl = '') {
         url: workerUrl,
         options: {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: {
+            'Content-Type': 'application/json',
+            ...(scrapeKey ? { 'x-api-key': scrapeKey, 'authorization': `Bearer ${scrapeKey}` } : {})
+          },
           body: JSON.stringify(params)
         }
       },
@@ -617,8 +635,11 @@ async function fetchScrapePayload(action, extraParams = {}, explicitUrl = '') {
         url: actionPath,
         options: {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(extraParams)
+          headers: {
+            'Content-Type': 'application/json',
+            ...(scrapeKey ? { 'x-api-key': scrapeKey, 'authorization': `Bearer ${scrapeKey}` } : {})
+          },
+          body: JSON.stringify({ ...extraParams, ...(scrapeKey ? { apiKey: scrapeKey, token: scrapeKey } : {}) })
         }
       }
     );
@@ -657,6 +678,7 @@ document.getElementById('cfg-push-token').value = PUSHOVER_APP_TOKEN;
 document.getElementById('cfg-push-user').value = PUSHOVER_USER_KEY;
 document.getElementById('cfg-betmgm-scrape-url').value = BETMGM_SCRAPE_URL;
 document.getElementById('cfg-fddk-scrape-url').value = FDDK_SCRAPE_URL;
+document.getElementById('cfg-scrape-key').value = SCRAPE_API_KEY;
 
 function log(msg, type='info') {
   const el = document.getElementById('alert-log');
