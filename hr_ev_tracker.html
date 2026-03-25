@@ -469,6 +469,20 @@ const PUSHOVER_USER_KEY = 'u8s29a84uwrrtidoieqj1izetdeq59';
 const TRACKED_BOOKMAKERS = ['betmgm', 'fanduel', 'draftkings', 'fanatics', 'hardrockbet'];
 const SCRAPE_FALLBACK_BOOKMAKERS = ['fanduel', 'draftkings'];
 
+function normalizeBookKey(book) {
+  const raw = `${book?.key || ''} ${book?.title || ''}`.toLowerCase();
+  if (raw.includes('fanduel')) return 'fanduel';
+  if (raw.includes('draftkings')) return 'draftkings';
+  if (raw.includes('fanatics')) return 'fanatics';
+  if (raw.includes('hard rock') || raw.includes('hardrock')) return 'hardrockbet';
+  if (raw.includes('betmgm')) return 'betmgm';
+  return (book?.key || '').toLowerCase();
+}
+
+function isTrackedBook(book) {
+  return TRACKED_BOOKMAKERS.includes(normalizeBookKey(book));
+}
+
 function cfg(id) { return document.getElementById(id).value.trim(); }
 document.getElementById('cfg-worker-url').value = CLOUDFLARE_WORKER_URL;
 document.getElementById('cfg-odds-key').value = ODDS_API_KEY;
@@ -590,7 +604,6 @@ async function fetchHROdds() {
   const region = 'us';
   const oddsFormat = 'american';
   
-  const bookmakers = TRACKED_BOOKMAKERS.join(',');
   const eventsUrl = `https://api.the-odds-api.com/v4/sports/${sport}/events/?apiKey=${key}`;
 
   const eventsRes = await fetchWithRateLimitRetry(eventsUrl, 'events list');
@@ -606,7 +619,7 @@ async function fetchHROdds() {
   const eventOddsPayloads = [];
 
   for (const event of events) {
-    const eventOddsUrl = `https://api.the-odds-api.com/v4/sports/${sport}/events/${event.id}/odds/?apiKey=${key}&regions=${region}&markets=${market}&oddsFormat=${oddsFormat}&bookmakers=${bookmakers}`;
+    const eventOddsUrl = `https://api.the-odds-api.com/v4/sports/${sport}/events/${event.id}/odds/?apiKey=${key}&regions=${region}&markets=${market}&oddsFormat=${oddsFormat}`;
     const eventOddsRes = await fetchWithRateLimitRetry(eventOddsUrl, `event ${event.id}`);
 
     sessionReqs++;
@@ -617,8 +630,10 @@ async function fetchHROdds() {
     }
 
     const eventOdds = await eventOddsRes.json();
+    eventOdds.bookmakers = (eventOdds.bookmakers || []).filter(isTrackedBook);
+
     const missingFallbackBooks = SCRAPE_FALLBACK_BOOKMAKERS.filter(key =>
-      !eventOdds?.bookmakers?.some(b => b.key === key)
+      !eventOdds?.bookmakers?.some(b => normalizeBookKey(b) === key)
     );
 
     if (missingFallbackBooks.length > 0) {
@@ -818,7 +833,7 @@ async function runScan() {
           const imp = americanToImplied(matchedOdds);
           marketProbs.push(imp);
           oddsByBook.push({
-            key: book.key || book.title || 'book',
+            key: normalizeBookKey(book),
             book: book.title || book.key || 'Book',
             odds: matchedOdds
           });
