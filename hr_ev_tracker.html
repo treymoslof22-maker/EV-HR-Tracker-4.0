@@ -194,6 +194,40 @@
     font-size: 13px;
   }
   .bet-table tr:hover td { background: rgba(255,255,255,0.025); }
+  @media (max-width: 760px) {
+    .bet-table thead { display: none; }
+    .bet-table, .bet-table tbody, .bet-table tr, .bet-table td {
+      display: block;
+      width: 100%;
+    }
+    .bet-table tr {
+      border-top: 1px solid var(--border);
+      padding: 8px 0;
+    }
+    .bet-table td {
+      border-top: none;
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 12px;
+      padding: 7px 12px;
+    }
+    .bet-table td::before {
+      content: attr(data-label);
+      color: var(--muted);
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: .5px;
+      min-width: 96px;
+      flex-shrink: 0;
+    }
+    .bet-table td[colspan] {
+      display: block;
+      padding: 0;
+    }
+    .bet-table td[colspan]::before { content: none; }
+    .book-odds-list { justify-content: flex-end; }
+  }
   .badge {
     display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 600;
   }
@@ -696,7 +730,8 @@ async function fetchHROdds() {
     }
 
     const eventOdds = await eventOddsRes.json();
-    eventOdds.bookmakers = (eventOdds.bookmakers || []).filter(isTrackedBook);
+    const nonBetmgmApiBooks = (eventOdds.bookmakers || []).filter(b => normalizeBookKey(b) !== 'betmgm');
+    eventOdds.bookmakers = nonBetmgmApiBooks.filter(isTrackedBook);
 
     const scrapedMatch = betmgmScrapeByMatchup.get(matchupKey(eventOdds.away_team, eventOdds.home_team));
     if (scrapedMatch?.bookmakers?.length) {
@@ -1029,15 +1064,15 @@ function renderTable(bets) {
         : `<span class="badge badge-red">Below +30%</span>`;
     return `
       <tr style="${rowStyle}">
-        <td style="font-weight:500;">${b.player}${b.isFivePlusEv ? ' <span class="badge badge-green">+30% EV</span>' : ''}</td>
-        <td style="color:var(--muted);font-size:12px;">${b.game}</td>
-        <td>${renderSportsbookOdds(b.oddsByBook, b.bestOdds)}</td>
-        <td>${formatAmerican(b.betmgmOdds)} <span class="tag-betmgm">BetMGM</span></td>
-        <td>${b.marketAvgOdds !== null ? formatAmerican(b.marketAvgOdds) : '<span style="color:var(--muted);">—</span>'}</td>
-        <td>${(b.betmgmImplied * 100).toFixed(1)}%</td>
-        <td>${b.trueProb !== null ? `${(b.trueProb * 100).toFixed(1)}%` : '<span style="color:var(--muted);">—</span>'}</td>
-        <td class="ev-val ${evClass}">${hasEv ? `${evSign}${b.evPct.toFixed(1)}%` : '<span style="color:var(--muted);">N/A</span>'}</td>
-        <td>${statusBadge}</td>
+        <td data-label="Player" style="font-weight:500;">${b.player}${b.isFivePlusEv ? ' <span class="badge badge-green">+30% EV</span>' : ''}</td>
+        <td data-label="Game" style="color:var(--muted);font-size:12px;">${b.game}</td>
+        <td data-label="Sportsbook Odds">${renderSportsbookOdds(b.oddsByBook, b.bestOdds)}</td>
+        <td data-label="BetMGM Odds">${formatAmerican(b.betmgmOdds)} <span class="tag-betmgm">BetMGM</span></td>
+        <td data-label="Market Avg">${b.marketAvgOdds !== null ? formatAmerican(b.marketAvgOdds) : '<span style="color:var(--muted);">—</span>'}</td>
+        <td data-label="BetMGM Implied">${(b.betmgmImplied * 100).toFixed(1)}%</td>
+        <td data-label="True Prob">${b.trueProb !== null ? `${(b.trueProb * 100).toFixed(1)}%` : '<span style="color:var(--muted);">—</span>'}</td>
+        <td data-label="EV%" class="ev-val ${evClass}">${hasEv ? `${evSign}${b.evPct.toFixed(1)}%` : '<span style="color:var(--muted);">N/A</span>'}</td>
+        <td data-label="Status">${statusBadge}</td>
       </tr>`;
   }).join('');
 }
