@@ -255,6 +255,27 @@
   }
   .odds-plus { color: var(--accent); }
   .odds-minus { color: var(--danger); }
+  .book-odds-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+  .book-odd {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 2px 8px;
+    border-radius: 6px;
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    font-size: 11px;
+  }
+  .book-odd .book-name { color: var(--muted); font-weight: 600; }
+  .book-odd.best {
+    border-color: rgba(61,240,160,0.4);
+    background: var(--accent-dim);
+    box-shadow: inset 0 0 0 1px rgba(61,240,160,0.22);
+  }
 
   .tabs {
     display: flex; gap: 0;
@@ -383,6 +404,7 @@
           <tr>
             <th>Player</th>
             <th>Game</th>
+            <th>Sportsbook Odds</th>
             <th>BetMGM Odds</th>
             <th>Market Avg</th>
             <th>BetMGM Implied</th>
@@ -393,7 +415,7 @@
         </thead>
         <tbody id="ev-tbody">
           <tr>
-            <td colspan="8">
+            <td colspan="9">
               <div class="empty-state">
                 <div class="icon">⚾</div>
                 <p>Run a scan to see live home run prop odds from BetMGM Colorado.</p>
@@ -579,6 +601,18 @@ function formatAmerican(odds) {
   return `<span class="odds-chip ${cls}">${str}</span>`;
 }
 
+function renderSportsbookOdds(oddsByBook = [], bestOdds = null) {
+  if (!oddsByBook.length) return '<span style="color:var(--muted);">—</span>';
+
+  return `<div class="book-odds-list">${oddsByBook.map(bookOdd => {
+    const isBest = Number.isFinite(bestOdds) && bookOdd.odds === bestOdds;
+    return `<span class="book-odd ${isBest ? 'best' : ''}">
+      <span class="book-name">${bookOdd.book}</span>
+      ${formatAmerican(bookOdd.odds)}
+    </span>`;
+  }).join('')}</div>`;
+}
+
 function normalizePlayerKey(label) {
   return (label || '')
     .normalize('NFD')
@@ -704,6 +738,11 @@ async function runScan() {
       const targetPlayerKey = normalizePlayerKey(playerName);
       const targetSide = getOutcomeSide(outcome);
       const betmgmOdds = parseFloat(outcome.price);
+      const oddsByBook = [{
+        key: 'betmgm',
+        book: 'BetMGM',
+        odds: betmgmOdds
+      }];
 
       if (!targetPlayerKey) continue;
       
@@ -722,10 +761,22 @@ async function runScan() {
           return true;
         });
         if (o) {
-          const imp = americanToImplied(parseFloat(o.price));
+          const matchedOdds = parseFloat(o.price);
+          const imp = americanToImplied(matchedOdds);
           marketProbs.push(imp);
+          oddsByBook.push({
+            key: book.key || book.title || 'book',
+            book: book.title || book.key || 'Book',
+            odds: matchedOdds
+          });
         }
       }
+
+      const bestOdds = oddsByBook.reduce((best, entry) => {
+        if (!Number.isFinite(entry.odds)) return best;
+        if (!Number.isFinite(best)) return entry.odds;
+        return entry.odds > best ? entry.odds : best;
+      }, Number.NEGATIVE_INFINITY);
 
       let trueProb = null;
       let evPct = null;
@@ -755,6 +806,8 @@ async function runScan() {
         betmgmImplied,
         trueProb,
         evPct,
+        oddsByBook,
+        bestOdds: Number.isFinite(bestOdds) ? bestOdds : null,
         isPositive: Number.isFinite(evPct) && evPct >= threshold * 100,
         isFivePlusEv: Number.isFinite(evPct) && evPct >= highlightThresholdPct,
         key: `${playerName}-${betmgmOdds}-${game.id}`
@@ -804,7 +857,7 @@ async function runScan() {
 function renderTable(bets) {
   const tbody = document.getElementById('ev-tbody');
   if (bets.length === 0) {
-    tbody.innerHTML = `<tr><td colspan="8"><div class="empty-state"><div class="icon">⚾</div><p>No home run props found for today's games.</p></div></td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="9"><div class="empty-state"><div class="icon">⚾</div><p>No home run props found for today's games.</p></div></td></tr>`;
     return;
   }
   
@@ -822,6 +875,7 @@ function renderTable(bets) {
       <tr style="${rowStyle}">
         <td style="font-weight:500;">${b.player}${b.isFivePlusEv ? ' <span class="badge badge-green">+5% EV</span>' : ''}</td>
         <td style="color:var(--muted);font-size:12px;">${b.game}</td>
+        <td>${renderSportsbookOdds(b.oddsByBook, b.bestOdds)}</td>
         <td>${formatAmerican(b.betmgmOdds)} <span class="tag-betmgm">BetMGM</span></td>
         <td>${b.marketAvgOdds !== null ? formatAmerican(b.marketAvgOdds) : '<span style="color:var(--muted);">—</span>'}</td>
         <td>${(b.betmgmImplied * 100).toFixed(1)}%</td>
