@@ -391,6 +391,14 @@
           <label>Cloudflare Worker Proxy URL</label>
           <input type="text" id="cfg-worker-url" value="https://super-art-7372.treymoslof22.workers.dev/" autocomplete="off" readonly>
         </div>
+        <div class="field" style="grid-column: 1 / -1;">
+          <label>BetMGM CO Scrape Endpoint URL</label>
+          <input type="text" id="cfg-betmgm-scrape-url" value="" placeholder="https://your-scrape-endpoint/betmgm-co">
+        </div>
+        <div class="field" style="grid-column: 1 / -1;">
+          <label>FanDuel/DK Scrape Endpoint URL</label>
+          <input type="text" id="cfg-fddk-scrape-url" value="" placeholder="https://your-scrape-endpoint/fd-dk">
+        </div>
         <div class="field">
           <label>+EV Alert Threshold (%)</label>
           <input type="number" id="cfg-threshold" value="30" min="0" max="30" step="0.5">
@@ -500,6 +508,8 @@ const CLOUDFLARE_WORKER_URL = 'https://super-art-7372.treymoslof22.workers.dev/'
 const ODDS_API_KEY = '91ec431ed0b88f3d8e48b719db1ae368';
 const PUSHOVER_APP_TOKEN = 'az6pk9ipdjj11rqkz7x1kfi28f9ppk';
 const PUSHOVER_USER_KEY = 'u8s29a84uwrrtidoieqj1izetdeq59';
+const BETMGM_SCRAPE_URL = '';
+const FDDK_SCRAPE_URL = '';
 const TRACKED_BOOKMAKERS = ['betmgm', 'fanduel', 'draftkings'];
 const SCRAPE_FALLBACK_BOOKMAKERS = ['fanduel', 'draftkings'];
 const HR_MARKET_KEYS = ['batter_home_runs', 'batter_home_runs_alternate'];
@@ -555,8 +565,8 @@ function getEventTeams(event) {
   return { away: away || 'Away Team', home: home || 'Home Team' };
 }
 
-async function fetchScrapePayload(action, extraParams = {}) {
-  const workerUrl = cfg('cfg-worker-url') || CLOUDFLARE_WORKER_URL;
+async function fetchScrapePayload(action, extraParams = {}, explicitUrl = '') {
+  const workerUrl = explicitUrl || cfg('cfg-worker-url') || CLOUDFLARE_WORKER_URL;
   if (!workerUrl) return null;
 
   const rootUrl = workerUrl.replace(/\/+$/, '');
@@ -645,6 +655,8 @@ document.getElementById('cfg-worker-url').value = CLOUDFLARE_WORKER_URL;
 document.getElementById('cfg-odds-key').value = ODDS_API_KEY;
 document.getElementById('cfg-push-token').value = PUSHOVER_APP_TOKEN;
 document.getElementById('cfg-push-user').value = PUSHOVER_USER_KEY;
+document.getElementById('cfg-betmgm-scrape-url').value = BETMGM_SCRAPE_URL;
+document.getElementById('cfg-fddk-scrape-url').value = FDDK_SCRAPE_URL;
 
 function log(msg, type='info') {
   const el = document.getElementById('alert-log');
@@ -716,11 +728,16 @@ async function fetchWithRateLimitRetry(url, contextLabel, maxAttempts = 4) {
 
 async function fetchBetmgmColoradoScrape() {
   try {
+    const scrapeUrl = cfg('cfg-betmgm-scrape-url');
+    if (!scrapeUrl) {
+      log('BetMGM scrape URL is not configured. Set "BetMGM CO Scrape Endpoint URL".', 'error');
+      return [];
+    }
     const payload = await fetchScrapePayload('scrape_betmgm_co_hr', {
       sport: 'baseball_mlb',
       market: 'batter_home_runs',
       state: 'co'
-    });
+    }, scrapeUrl);
     if (!payload) return [];
     const events = extractScrapedEvents(payload);
     if (events.length === 0) log('co.betmgm scrape returned no parsable events payload.', 'error');
@@ -761,11 +778,16 @@ async function fetchBetmgmColoradoScrape() {
 
 async function fetchScrapedBookmakerFallback() {
   try {
+    const scrapeUrl = cfg('cfg-fddk-scrape-url');
+    if (!scrapeUrl) {
+      log('FD/DK scrape URL is not configured. Set "FanDuel/DK Scrape Endpoint URL".', 'error');
+      return [];
+    }
     const payload = await fetchScrapePayload('scrape_hr_props', {
       books: SCRAPE_FALLBACK_BOOKMAKERS.join(','),
       sport: 'baseball_mlb',
       market: 'batter_home_runs'
-    });
+    }, scrapeUrl);
     if (!payload) return [];
     const events = extractScrapedEvents(payload);
     if (events.length === 0) log('FD/DK scrape returned no parsable events payload.', 'error');
