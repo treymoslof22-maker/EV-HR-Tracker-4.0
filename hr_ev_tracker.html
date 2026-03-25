@@ -561,10 +561,18 @@ async function fetchScrapePayload(action, extraParams = {}) {
 
   const params = { action, ...extraParams };
   const query = new URLSearchParams(params).toString();
+  const rootUrl = workerUrl.replace(/\/+$/, '');
+  const actionPath = `${rootUrl}/${action}`;
+  const actionPathWithQuery = `${actionPath}?${new URLSearchParams(extraParams).toString()}`;
   const attempts = [
     {
       label: 'GET',
       url: `${workerUrl}${workerUrl.includes('?') ? '&' : '?'}${query}`,
+      options: { method: 'GET' }
+    },
+    {
+      label: 'GET path',
+      url: actionPathWithQuery,
       options: { method: 'GET' }
     },
     {
@@ -584,17 +592,41 @@ async function fetchScrapePayload(action, extraParams = {}) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(params)
       }
+    },
+    {
+      label: 'POST path json',
+      url: actionPath,
+      options: {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(extraParams)
+      }
     }
   ];
 
+  const failures = [];
   for (const attempt of attempts) {
     try {
       const res = await fetch(attempt.url, attempt.options);
-      if (!res.ok) continue;
-      const payload = await res.json();
-      if (payload) return payload;
-    } catch (_) {}
+      if (!res.ok) {
+        failures.push(`${attempt.label}:${res.status}`);
+        continue;
+      }
+
+      const text = await res.text();
+      if (!text) continue;
+
+      try {
+        const payload = JSON.parse(text);
+        if (payload) return payload;
+      } catch (_) {
+        failures.push(`${attempt.label}:non-json`);
+      }
+    } catch (e) {
+      failures.push(`${attempt.label}:error`);
+    }
   }
+  log(`Scrape request failed for ${action} (${failures.join(', ') || 'no response'}).`, 'error');
   return null;
 }
 
