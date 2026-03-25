@@ -555,6 +555,49 @@ function getEventTeams(event) {
   return { away: away || 'Away Team', home: home || 'Home Team' };
 }
 
+async function fetchScrapePayload(action, extraParams = {}) {
+  const workerUrl = cfg('cfg-worker-url') || CLOUDFLARE_WORKER_URL;
+  if (!workerUrl) return null;
+
+  const params = { action, ...extraParams };
+  const query = new URLSearchParams(params).toString();
+  const attempts = [
+    {
+      label: 'GET',
+      url: `${workerUrl}${workerUrl.includes('?') ? '&' : '?'}${query}`,
+      options: { method: 'GET' }
+    },
+    {
+      label: 'POST form',
+      url: workerUrl,
+      options: {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: query
+      }
+    },
+    {
+      label: 'POST json',
+      url: workerUrl,
+      options: {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(params)
+      }
+    }
+  ];
+
+  for (const attempt of attempts) {
+    try {
+      const res = await fetch(attempt.url, attempt.options);
+      if (!res.ok) continue;
+      const payload = await res.json();
+      if (payload) return payload;
+    } catch (_) {}
+  }
+  return null;
+}
+
 function cfg(id) { return document.getElementById(id).value.trim(); }
 document.getElementById('cfg-worker-url').value = CLOUDFLARE_WORKER_URL;
 document.getElementById('cfg-odds-key').value = ODDS_API_KEY;
@@ -630,16 +673,9 @@ async function fetchWithRateLimitRetry(url, contextLabel, maxAttempts = 4) {
 }
 
 async function fetchBetmgmColoradoScrape() {
-  const workerUrl = cfg('cfg-worker-url') || CLOUDFLARE_WORKER_URL;
-  if (!workerUrl) return [];
-
-  const url = new URL(workerUrl);
-  url.searchParams.set('action', 'scrape_betmgm_co_hr');
-
   try {
-    const res = await fetch(url.toString());
-    if (!res.ok) return [];
-    const payload = await res.json();
+    const payload = await fetchScrapePayload('scrape_betmgm_co_hr');
+    if (!payload) return [];
     const events = extractScrapedEvents(payload);
     if (events.length === 0) log('co.betmgm scrape returned no parsable events payload.', 'error');
 
@@ -678,17 +714,11 @@ async function fetchBetmgmColoradoScrape() {
 }
 
 async function fetchScrapedBookmakerFallback() {
-  const workerUrl = cfg('cfg-worker-url') || CLOUDFLARE_WORKER_URL;
-  if (!workerUrl) return [];
-
-  const url = new URL(workerUrl);
-  url.searchParams.set('action', 'scrape_hr_props');
-  url.searchParams.set('books', SCRAPE_FALLBACK_BOOKMAKERS.join(','));
-
   try {
-    const res = await fetch(url.toString());
-    if (!res.ok) return [];
-    const payload = await res.json();
+    const payload = await fetchScrapePayload('scrape_hr_props', {
+      books: SCRAPE_FALLBACK_BOOKMAKERS.join(',')
+    });
+    if (!payload) return [];
     const events = extractScrapedEvents(payload);
     if (events.length === 0) log('FD/DK scrape returned no parsable events payload.', 'error');
 
