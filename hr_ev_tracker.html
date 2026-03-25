@@ -799,10 +799,10 @@ async function runScan() {
       b.key !== 'betmgm' && !b.title?.toLowerCase().includes('betmgm')
     ) || [];
     
-    const hrMarketBetMGM = betmgmBook.markets?.find(m => HR_MARKET_KEYS.includes(m.key));
-    if (!hrMarketBetMGM) continue;
+    const hrMarketsBetMGM = betmgmBook.markets?.filter(m => HR_MARKET_KEYS.includes(m.key)) || [];
+    if (!hrMarketsBetMGM.length) continue;
     
-    for (const outcome of hrMarketBetMGM.outcomes || []) {
+    for (const outcome of hrMarketsBetMGM.flatMap(m => m.outcomes || [])) {
       const playerName = getOutcomePlayerLabel(outcome);
       const targetPlayerKey = normalizePlayerKey(playerName);
       const targetSide = getOutcomeSide(outcome);
@@ -819,9 +819,12 @@ async function runScan() {
       
       const marketProbs = [];
       for (const book of otherBooks) {
-        const mkt = book.markets?.find(m => HR_MARKET_KEYS.includes(m.key));
-        if (!mkt) continue;
-        const o = mkt.outcomes?.find(x => {
+        const candidateOutcomes = (book.markets || [])
+          .filter(m => HR_MARKET_KEYS.includes(m.key))
+          .flatMap(m => m.outcomes || []);
+        if (!candidateOutcomes.length) continue;
+
+        const matches = candidateOutcomes.filter(x => {
           const bookPlayerKey = normalizePlayerKey(getOutcomePlayerLabel(x));
           if (!bookPlayerKey || !playerKeysMatch(bookPlayerKey, targetPlayerKey)) return false;
 
@@ -829,6 +832,13 @@ async function runScan() {
           if (targetSide && bookSide && targetSide !== bookSide) return false;
           return true;
         });
+        const o = matches.reduce((best, x) => {
+          const price = parseFloat(x.price);
+          if (!Number.isFinite(price)) return best;
+          if (!best) return x;
+          return price > parseFloat(best.price) ? x : best;
+        }, null);
+
         if (o) {
           const matchedOdds = parseFloat(o.price);
           const imp = americanToImplied(matchedOdds);
