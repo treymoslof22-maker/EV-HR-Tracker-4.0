@@ -466,6 +466,7 @@ const CLOUDFLARE_WORKER_URL = 'https://super-art-7372.treymoslof22.workers.dev/'
 const ODDS_API_KEY = '91ec431ed0b88f3d8e48b719db1ae368';
 const PUSHOVER_APP_TOKEN = 'az6pk9ipdjj11rqkz7x1kfi28f9ppk';
 const PUSHOVER_USER_KEY = 'u8s29a84uwrrtidoieqj1izetdeq59';
+const TRACKED_BOOKMAKERS = ['betmgm', 'fanduel', 'draftkings', 'fanatics', 'hardrockbet'];
 
 function cfg(id) { return document.getElementById(id).value.trim(); }
 document.getElementById('cfg-worker-url').value = CLOUDFLARE_WORKER_URL;
@@ -549,7 +550,7 @@ async function fetchHROdds() {
   const region = 'us';
   const oddsFormat = 'american';
   
-  const bookmakers = 'betmgm,fanduel,draftkings,pointsbet,caesars,espnbet';
+  const bookmakers = TRACKED_BOOKMAKERS.join(',');
   const eventsUrl = `https://api.the-odds-api.com/v4/sports/${sport}/events/?apiKey=${key}`;
 
   const eventsRes = await fetchWithRateLimitRetry(eventsUrl, 'events list');
@@ -828,13 +829,14 @@ async function runScan() {
   const posCount = evBets.filter(b => b.isPositive).length;
   sessionEvCount += posCount;
   document.getElementById('stat-ev').textContent = sessionEvCount;
+  const booksSeen = [...new Set(evBets.flatMap(b => (b.oddsByBook || []).map(o => o.key)))];
   
   renderTable(evBets);
   
   const now = new Date().toLocaleTimeString();
   document.getElementById('last-scan').textContent = `Last scan: ${now} — ${evBets.length} players found`;
   
-  log(`Scan complete. ${evBets.length} players evaluated, ${posCount} +EV opportunities found.`, posCount > 0 ? 'success' : 'info');
+  log(`Scan complete. ${evBets.length} players evaluated, ${posCount} +EV opportunities found. Books seen: ${booksSeen.join(', ') || 'none'}.`, posCount > 0 ? 'success' : 'info');
   
   for (const bet of evBets.filter(b => b.isPositive)) {
     if (!lastAlertedKeys.has(bet.key)) {
