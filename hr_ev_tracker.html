@@ -466,7 +466,7 @@ const CLOUDFLARE_WORKER_URL = 'https://super-art-7372.treymoslof22.workers.dev/'
 const ODDS_API_KEY = '91ec431ed0b88f3d8e48b719db1ae368';
 const PUSHOVER_APP_TOKEN = 'az6pk9ipdjj11rqkz7x1kfi28f9ppk';
 const PUSHOVER_USER_KEY = 'u8s29a84uwrrtidoieqj1izetdeq59';
-const TRACKED_BOOKMAKERS = ['betmgm', 'fanduel', 'draftkings'];
+const TRACKED_BOOKMAKERS = ['fanduel', 'draftkings'];
 const SCRAPE_FALLBACK_BOOKMAKERS = ['fanduel', 'draftkings'];
 const HR_MARKET_KEYS = ['batter_home_runs', 'batter_home_runs_alternate'];
 
@@ -685,7 +685,7 @@ async function fetchHROdds() {
   const eventOddsPayloads = [];
 
   for (const event of events) {
-    const eventOddsUrl = `https://api.the-odds-api.com/v4/sports/${sport}/events/${event.id}/odds/?apiKey=${key}&regions=${region}&markets=${market}&oddsFormat=${oddsFormat}&bookmakers=betmgm,fanduel,draftkings`;
+    const eventOddsUrl = `https://api.the-odds-api.com/v4/sports/${sport}/events/${event.id}/odds/?apiKey=${key}&regions=${region}&markets=${market}&oddsFormat=${oddsFormat}&bookmakers=fanduel,draftkings`;
     const eventOddsRes = await fetchWithRateLimitRetry(eventOddsUrl, `event ${event.id}`);
 
     sessionReqs++;
@@ -698,13 +698,10 @@ async function fetchHROdds() {
     const eventOdds = await eventOddsRes.json();
     eventOdds.bookmakers = (eventOdds.bookmakers || []).filter(isTrackedBook);
 
-    const hasBetmgm = eventOdds.bookmakers.some(b => normalizeBookKey(b) === 'betmgm');
-    if (!hasBetmgm) {
-      const scrapedMatch = betmgmScrapeByMatchup.get(matchupKey(eventOdds.away_team, eventOdds.home_team));
-      if (scrapedMatch?.bookmakers?.length) {
-        eventOdds.bookmakers = [...eventOdds.bookmakers, ...scrapedMatch.bookmakers];
-        log(`Added co.betmgm scraped odds for ${eventOdds.away_team} @ ${eventOdds.home_team}.`, 'info');
-      }
+    const scrapedMatch = betmgmScrapeByMatchup.get(matchupKey(eventOdds.away_team, eventOdds.home_team));
+    if (scrapedMatch?.bookmakers?.length) {
+      eventOdds.bookmakers = [...eventOdds.bookmakers, ...scrapedMatch.bookmakers];
+      log(`Added co.betmgm scraped odds for ${eventOdds.away_team} @ ${eventOdds.home_team}.`, 'info');
     }
 
     const missingFallbackBooks = SCRAPE_FALLBACK_BOOKMAKERS.filter(bookKey =>
@@ -726,7 +723,7 @@ async function fetchHROdds() {
   }
 
   if (eventOddsPayloads.length === 0 && scrapedBetmgmEvents.length > 0) {
-    log('Odds API returned no tracked books; using co.betmgm scraped events only.', 'info');
+    log('Odds API returned no FD/DK books; using co.betmgm scraped events only.', 'info');
     return scrapedBetmgmEvents;
   }
 
