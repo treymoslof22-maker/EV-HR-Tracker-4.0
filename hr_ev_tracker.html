@@ -579,6 +579,49 @@ function formatAmerican(odds) {
   return `<span class="odds-chip ${cls}">${str}</span>`;
 }
 
+function normalizePlayerKey(label) {
+  return (label || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/\b(to\s+hit\s+a?\s*home\s*run|to\s+homer|to\s+record\s+a?\s*home\s*run|home\s*runs?|home\s*run)\b/g, ' ')
+    .replace(/\b(yes|no|over|under|ou|o\/u|alt|alternate)\b/g, ' ')
+    .replace(/\b\d+(\.\d+)?\+?\b/g, ' ')
+    .replace(/[.'’`-]/g, '')
+    .replace(/\b(jr|sr|ii|iii|iv|v)\b/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function playerKeysMatch(a, b) {
+  if (!a || !b) return false;
+  if (a === b) return true;
+
+  const aTokens = a.split(' ').filter(t => t.length > 1);
+  const bTokens = b.split(' ').filter(t => t.length > 1);
+  if (!aTokens.length || !bTokens.length) return false;
+
+  const overlap = aTokens.filter(t => bTokens.includes(t)).length;
+  const minLen = Math.min(aTokens.length, bTokens.length);
+  return overlap >= minLen;
+}
+
+function getOutcomePlayerLabel(outcome) {
+  const genericNames = new Set(['yes', 'no', 'over', 'under']);
+  const name = (outcome?.name || '').trim();
+  const candidates = [outcome?.description, outcome?.participant];
+  if (name && !genericNames.has(name.toLowerCase())) candidates.push(name);
+  const firstValid = candidates.find(v => (v || '').trim().length > 0);
+  return (firstValid || name || 'Unknown').trim();
+}
+
+function getOutcomeSide(outcome) {
+  const side = (outcome?.name || '').trim().toLowerCase();
+  if (side === 'yes' || side === 'over') return 'yes';
+  if (side === 'no' || side === 'under') return 'no';
+  return null;
+}
+
 async function sendPushover(title, message) {
   const workerUrl = CLOUDFLARE_WORKER_URL;
   const userKey = PUSHOVER_USER_KEY;
@@ -625,6 +668,7 @@ async function testPushover() {
 async function runScan() {
   const threshold = parseFloat(cfg('cfg-threshold')) / 100;
   const minOdds = parseFloat(cfg('cfg-min-odds'));
+  const highlightThresholdPct = 5;
   
   updateStatus('Scanning...', true);
   log('Fetching MLB HR prop odds...', 'info');
@@ -656,8 +700,12 @@ async function runScan() {
     if (!hrMarketBetMGM) continue;
     
     for (const outcome of hrMarketBetMGM.outcomes || []) {
-      const playerName = outcome.description || outcome.name;
+      const playerName = getOutcomePlayerLabel(outcome);
+      const targetPlayerKey = normalizePlayerKey(playerName);
+      const targetSide = getOutcomeSide(outcome);
       const betmgmOdds = parseFloat(outcome.price);
+
+      if (!targetPlayerKey) continue;
       
       if (betmgmOdds < minOdds) continue;
       
@@ -665,29 +713,39 @@ async function runScan() {
       for (const book of otherBooks) {
         const mkt = book.markets?.find(m => m.key === 'batter_home_runs');
         if (!mkt) continue;
-        const o = mkt.outcomes?.find(x => (x.description || x.name) === playerName);
+        const o = mkt.outcomes?.find(x => {
+          const bookPlayerKey = normalizePlayerKey(getOutcomePlayerLabel(x));
+          if (!bookPlayerKey || !playerKeysMatch(bookPlayerKey, targetPlayerKey)) return false;
+
+          const bookSide = getOutcomeSide(x);
+          if (targetSide && bookSide && targetSide !== bookSide) return false;
+          return true;
+        });
         if (o) {
           const imp = americanToImplied(parseFloat(o.price));
           marketProbs.push(imp);
         }
       }
-      
-      if (marketProbs.length < 2) continue;
-      
-      const avgVigProb = marketProbs.reduce((a, b) => a + b, 0) / marketProbs.length;
-      const trueProb = avgVigProb / (1 + (avgVigProb - 0.5) * 0.05);
-      
-      const betmgmImplied = americanToImplied(betmgmOdds);
-      const ev = calcEV(betmgmOdds, trueProb);
-      const evPct = ev * 100;
-      
-      const marketAvgOdds = (() => {
+
+      let trueProb = null;
+      let evPct = null;
+      let marketAvgOdds = null;
+
+      if (marketProbs.length >= 2) {
+        const avgVigProb = marketProbs.reduce((a, b) => a + b, 0) / marketProbs.length;
+        trueProb = avgVigProb / (1 + (avgVigProb - 0.5) * 0.05);
+        const ev = calcEV(betmgmOdds, trueProb);
+        evPct = ev * 100;
+
         const avgImp = marketProbs.reduce((a,b)=>a+b,0)/marketProbs.length;
-        if (avgImp <= 0) return 0;
-        return Math.round(avgImp >= 0.5
-          ? -(avgImp / (1 - avgImp)) * 100
-          : ((1 - avgImp) / avgImp) * 100);
-      })();
+        if (avgImp > 0) {
+          marketAvgOdds = Math.round(avgImp >= 0.5
+            ? -(avgImp / (1 - avgImp)) * 100
+            : ((1 - avgImp) / avgImp) * 100);
+        }
+      }
+
+      const betmgmImplied = americanToImplied(betmgmOdds);
       
       evBets.push({
         player: playerName,
@@ -697,13 +755,22 @@ async function runScan() {
         betmgmImplied,
         trueProb,
         evPct,
-        isPositive: evPct >= threshold * 100,
+        isPositive: Number.isFinite(evPct) && evPct >= threshold * 100,
+        isFivePlusEv: Number.isFinite(evPct) && evPct >= highlightThresholdPct,
         key: `${playerName}-${betmgmOdds}-${game.id}`
       });
     }
   }
   
-  evBets.sort((a, b) => b.evPct - a.evPct);
+  evBets.sort((a, b) => {
+    const aPriority = a.isFivePlusEv ? 1 : 0;
+    const bPriority = b.isFivePlusEv ? 1 : 0;
+    if (aPriority !== bPriority) return bPriority - aPriority;
+
+    const aEv = Number.isFinite(a.evPct) ? a.evPct : -Infinity;
+    const bEv = Number.isFinite(b.evPct) ? b.evPct : -Infinity;
+    return bEv - aEv;
+  });
   
   const posCount = evBets.filter(b => b.isPositive).length;
   sessionEvCount += posCount;
@@ -742,22 +809,25 @@ function renderTable(bets) {
   }
   
   tbody.innerHTML = bets.map(b => {
-    const evClass = b.evPct >= 0 ? 'ev-pos' : 'ev-neg';
-    const evSign = b.evPct >= 0 ? '+' : '';
-    const rowStyle = b.isPositive ? 'background:rgba(61,240,160,0.04);' : '';
+    const hasEv = Number.isFinite(b.evPct);
+    const evClass = hasEv && b.evPct >= 0 ? 'ev-pos' : 'ev-neg';
+    const evSign = hasEv && b.evPct >= 0 ? '+' : '';
+    const rowStyle = b.isFivePlusEv ? 'background:rgba(61,240,160,0.10);' : '';
+    const statusBadge = !hasEv
+      ? `<span class="badge badge-warn">Waiting for market</span>`
+      : b.isFivePlusEv
+        ? `<span class="badge badge-green">+5% EV</span>`
+        : `<span class="badge badge-red">Below +5%</span>`;
     return `
       <tr style="${rowStyle}">
-        <td style="font-weight:500;">${b.player}${b.isPositive ? ' <span class="badge badge-green">+EV</span>' : ''}</td>
+        <td style="font-weight:500;">${b.player}${b.isFivePlusEv ? ' <span class="badge badge-green">+5% EV</span>' : ''}</td>
         <td style="color:var(--muted);font-size:12px;">${b.game}</td>
         <td>${formatAmerican(b.betmgmOdds)} <span class="tag-betmgm">BetMGM</span></td>
-        <td>${formatAmerican(b.marketAvgOdds)}</td>
+        <td>${b.marketAvgOdds !== null ? formatAmerican(b.marketAvgOdds) : '<span style="color:var(--muted);">—</span>'}</td>
         <td>${(b.betmgmImplied * 100).toFixed(1)}%</td>
-        <td>${(b.trueProb * 100).toFixed(1)}%</td>
-        <td class="ev-val ${evClass}">${evSign}${b.evPct.toFixed(1)}%</td>
-        <td>${b.isPositive
-          ? `<span class="badge badge-green">Bet it</span>`
-          : `<span class="badge badge-red">Skip</span>`
-        }</td>
+        <td>${b.trueProb !== null ? `${(b.trueProb * 100).toFixed(1)}%` : '<span style="color:var(--muted);">—</span>'}</td>
+        <td class="ev-val ${evClass}">${hasEv ? `${evSign}${b.evPct.toFixed(1)}%` : '<span style="color:var(--muted);">N/A</span>'}</td>
+        <td>${statusBadge}</td>
       </tr>`;
   }).join('');
 }
