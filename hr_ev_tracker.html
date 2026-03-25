@@ -468,6 +468,7 @@ const PUSHOVER_APP_TOKEN = 'az6pk9ipdjj11rqkz7x1kfi28f9ppk';
 const PUSHOVER_USER_KEY = 'u8s29a84uwrrtidoieqj1izetdeq59';
 const TRACKED_BOOKMAKERS = ['betmgm', 'fanduel', 'draftkings', 'fanatics', 'hardrockbet'];
 const SCRAPE_FALLBACK_BOOKMAKERS = ['fanduel', 'draftkings'];
+const HR_MARKET_KEYS = ['batter_home_runs', 'batter_home_runs_alternate'];
 
 function normalizeBookKey(book) {
   const raw = `${book?.key || ''} ${book?.title || ''}`.toLowerCase();
@@ -578,9 +579,9 @@ async function fetchScrapedBookmakerFallback(eventId) {
         key: book.key,
         title: book.title || book.key,
         markets: (book.markets || [])
-          .filter(m => m?.key === 'batter_home_runs')
+          .filter(m => HR_MARKET_KEYS.includes(m?.key))
           .map(m => ({
-            key: 'batter_home_runs',
+            key: m.key,
             outcomes: (m.outcomes || []).map(o => ({
               name: o.name,
               description: o.description,
@@ -600,7 +601,7 @@ async function fetchHROdds() {
   const key = ODDS_API_KEY;
   
   const sport = 'baseball_mlb';
-  const market = 'batter_home_runs';
+  const market = HR_MARKET_KEYS.join(',');
   const region = 'us';
   const oddsFormat = 'american';
   
@@ -798,7 +799,7 @@ async function runScan() {
       b.key !== 'betmgm' && !b.title?.toLowerCase().includes('betmgm')
     ) || [];
     
-    const hrMarketBetMGM = betmgmBook.markets?.find(m => m.key === 'batter_home_runs');
+    const hrMarketBetMGM = betmgmBook.markets?.find(m => HR_MARKET_KEYS.includes(m.key));
     if (!hrMarketBetMGM) continue;
     
     for (const outcome of hrMarketBetMGM.outcomes || []) {
@@ -818,7 +819,7 @@ async function runScan() {
       
       const marketProbs = [];
       for (const book of otherBooks) {
-        const mkt = book.markets?.find(m => m.key === 'batter_home_runs');
+        const mkt = book.markets?.find(m => HR_MARKET_KEYS.includes(m.key));
         if (!mkt) continue;
         const o = mkt.outcomes?.find(x => {
           const bookPlayerKey = normalizePlayerKey(getOutcomePlayerLabel(x));
