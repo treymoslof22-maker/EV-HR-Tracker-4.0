@@ -194,6 +194,40 @@
     font-size: 13px;
   }
   .bet-table tr:hover td { background: rgba(255,255,255,0.025); }
+  @media (max-width: 760px) {
+    .bet-table thead { display: none; }
+    .bet-table, .bet-table tbody, .bet-table tr, .bet-table td {
+      display: block;
+      width: 100%;
+    }
+    .bet-table tr {
+      border-top: 1px solid var(--border);
+      padding: 8px 0;
+    }
+    .bet-table td {
+      border-top: none;
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 12px;
+      padding: 7px 12px;
+    }
+    .bet-table td::before {
+      content: attr(data-label);
+      color: var(--muted);
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: .5px;
+      min-width: 96px;
+      flex-shrink: 0;
+    }
+    .bet-table td[colspan] {
+      display: block;
+      padding: 0;
+    }
+    .bet-table td[colspan]::before { content: none; }
+    .book-odds-list { justify-content: flex-end; }
+  }
   .badge {
     display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 600;
   }
@@ -255,6 +289,27 @@
   }
   .odds-plus { color: var(--accent); }
   .odds-minus { color: var(--danger); }
+  .book-odds-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+  .book-odd {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 2px 8px;
+    border-radius: 6px;
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    font-size: 11px;
+  }
+  .book-odd .book-name { color: var(--muted); font-weight: 600; }
+  .book-odd.best {
+    border-color: rgba(61,240,160,0.4);
+    background: var(--accent-dim);
+    box-shadow: inset 0 0 0 1px rgba(61,240,160,0.22);
+  }
 
   .tabs {
     display: flex; gap: 0;
@@ -338,7 +393,7 @@
         </div>
         <div class="field">
           <label>+EV Alert Threshold (%)</label>
-          <input type="number" id="cfg-threshold" value="5" min="0" max="30" step="0.5">
+          <input type="number" id="cfg-threshold" value="30" min="0" max="30" step="0.5">
         </div>
         <div class="field">
           <label>Poll Interval (minutes)</label>
@@ -383,6 +438,7 @@
           <tr>
             <th>Player</th>
             <th>Game</th>
+            <th>Sportsbook Odds</th>
             <th>BetMGM Odds</th>
             <th>Market Avg</th>
             <th>BetMGM Implied</th>
@@ -393,7 +449,7 @@
         </thead>
         <tbody id="ev-tbody">
           <tr>
-            <td colspan="8">
+            <td colspan="9">
               <div class="empty-state">
                 <div class="icon">⚾</div>
                 <p>Run a scan to see live home run prop odds from BetMGM Colorado.</p>
@@ -444,6 +500,103 @@ const CLOUDFLARE_WORKER_URL = 'https://super-art-7372.treymoslof22.workers.dev/'
 const ODDS_API_KEY = '91ec431ed0b88f3d8e48b719db1ae368';
 const PUSHOVER_APP_TOKEN = 'az6pk9ipdjj11rqkz7x1kfi28f9ppk';
 const PUSHOVER_USER_KEY = 'u8s29a84uwrrtidoieqj1izetdeq59';
+const TRACKED_BOOKMAKERS = ['betmgm', 'fanduel', 'draftkings'];
+const SCRAPE_FALLBACK_BOOKMAKERS = ['fanduel', 'draftkings'];
+const HR_MARKET_KEYS = ['batter_home_runs', 'batter_home_runs_alternate'];
+
+function normalizeBookKey(book) {
+  const raw = `${book?.key || ''} ${book?.title || ''}`.toLowerCase();
+  if (raw.includes('fanduel')) return 'fanduel';
+  if (raw.includes('draftkings')) return 'draftkings';
+  if (raw.includes('fanatics')) return 'fanatics';
+  if (raw.includes('hard rock') || raw.includes('hardrock')) return 'hardrockbet';
+  if (raw.includes('betmgm')) return 'betmgm';
+  return (book?.key || '').toLowerCase();
+}
+
+function isTrackedBook(book) {
+  return TRACKED_BOOKMAKERS.includes(normalizeBookKey(book));
+}
+
+function matchupKey(awayTeam, homeTeam) {
+  return `${(awayTeam || '').toLowerCase().trim()}@@${(homeTeam || '').toLowerCase().trim()}`;
+}
+
+function isSingleHomeRunOutcome(outcome) {
+  const point = parseFloat(outcome?.point);
+  if (Number.isFinite(point)) return point <= 0.5;
+
+  const text = `${outcome?.name || ''} ${outcome?.description || ''} ${outcome?.label || ''}`.toLowerCase();
+  if (/\b[2-9]\+\b/.test(text)) return false;
+  if (/(over|under)\s*[1-9]\.5/.test(text)) return false;
+  return true;
+}
+
+function extractScrapedEvents(payload) {
+  if (!payload) return [];
+  if (Array.isArray(payload)) return payload;
+  if (Array.isArray(payload.events)) return payload.events;
+  if (Array.isArray(payload.games)) return payload.games;
+  if (payload.data) return extractScrapedEvents(payload.data);
+  if (payload.away_team || payload.home_team || payload.bookmakers) return [payload];
+  return [];
+}
+
+function getEventTeams(event) {
+  const away = event?.away_team || event?.awayTeam || null;
+  const home = event?.home_team || event?.homeTeam || null;
+  if (away && home) return { away, home };
+
+  const name = event?.name || event?.event_name || '';
+  if (typeof name === 'string' && name.includes(' @ ')) {
+    const [a, h] = name.split(' @ ').map(s => s.trim());
+    if (a && h) return { away: a, home: h };
+  }
+  return { away: away || 'Away Team', home: home || 'Home Team' };
+}
+
+async function fetchScrapePayload(action, extraParams = {}) {
+  const workerUrl = cfg('cfg-worker-url') || CLOUDFLARE_WORKER_URL;
+  if (!workerUrl) return null;
+
+  const params = { action, ...extraParams };
+  const query = new URLSearchParams(params).toString();
+  const attempts = [
+    {
+      label: 'GET',
+      url: `${workerUrl}${workerUrl.includes('?') ? '&' : '?'}${query}`,
+      options: { method: 'GET' }
+    },
+    {
+      label: 'POST form',
+      url: workerUrl,
+      options: {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: query
+      }
+    },
+    {
+      label: 'POST json',
+      url: workerUrl,
+      options: {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(params)
+      }
+    }
+  ];
+
+  for (const attempt of attempts) {
+    try {
+      const res = await fetch(attempt.url, attempt.options);
+      if (!res.ok) continue;
+      const payload = await res.json();
+      if (payload) return payload;
+    } catch (_) {}
+  }
+  return null;
+}
 
 function cfg(id) { return document.getElementById(id).value.trim(); }
 document.getElementById('cfg-worker-url').value = CLOUDFLARE_WORKER_URL;
@@ -519,51 +672,125 @@ async function fetchWithRateLimitRetry(url, contextLabel, maxAttempts = 4) {
   throw new Error(`Odds API rate-limit retry failed${contextLabel ? ` for ${contextLabel}` : ''}: ${lastErrorText}`);
 }
 
+async function fetchBetmgmColoradoScrape() {
+  try {
+    const payload = await fetchScrapePayload('scrape_betmgm_co_hr');
+    if (!payload) return [];
+    const events = extractScrapedEvents(payload);
+    if (events.length === 0) log('co.betmgm scrape returned no parsable events payload.', 'error');
+
+    return events
+      .map(event => {
+        const teams = getEventTeams(event);
+        return ({
+        id: event.id || `${teams.away || 'away'}-${teams.home || 'home'}`,
+        away_team: teams.away,
+        home_team: teams.home,
+        bookmakers: (event.bookmakers || [])
+          .filter(book => normalizeBookKey(book) === 'betmgm')
+          .map(book => ({
+            key: 'betmgm',
+            title: book.title || 'BetMGM Colorado',
+            markets: (book.markets || [])
+              .filter(m => HR_MARKET_KEYS.includes(m?.key))
+              .map(m => ({
+                key: m.key,
+                outcomes: (m.outcomes || []).map(o => ({
+                  name: o.name,
+                  description: o.description,
+                  participant: o.participant,
+                  point: Number.isFinite(parseFloat(o.point)) ? parseFloat(o.point) : null,
+                  price: parseFloat(o.price)
+                })).filter(o => Number.isFinite(o.price) && isSingleHomeRunOutcome(o))
+              }))
+              .filter(m => m.outcomes.length > 0)
+          }))
+      })})
+      .filter(event => event.bookmakers.length > 0);
+  } catch (e) {
+    log(`BetMGM CO scrape failed: ${e.message}`, 'error');
+    return [];
+  }
+}
+
+async function fetchScrapedBookmakerFallback() {
+  try {
+    const payload = await fetchScrapePayload('scrape_hr_props', {
+      books: SCRAPE_FALLBACK_BOOKMAKERS.join(',')
+    });
+    if (!payload) return [];
+    const events = extractScrapedEvents(payload);
+    if (events.length === 0) log('FD/DK scrape returned no parsable events payload.', 'error');
+
+    return events
+      .map(event => {
+        const teams = getEventTeams(event);
+        return ({
+        id: event.id || `${teams.away || 'away'}-${teams.home || 'home'}`,
+        away_team: teams.away,
+        home_team: teams.home,
+        bookmakers: (event.bookmakers || [])
+          .filter(book => SCRAPE_FALLBACK_BOOKMAKERS.includes(normalizeBookKey(book)))
+          .map(book => ({
+            key: normalizeBookKey(book),
+            title: book.title || book.key,
+            markets: (book.markets || [])
+              .filter(m => HR_MARKET_KEYS.includes(m?.key))
+              .map(m => ({
+                key: m.key,
+                outcomes: (m.outcomes || []).map(o => ({
+                  name: o.name,
+                  description: o.description,
+                  participant: o.participant,
+                  point: Number.isFinite(parseFloat(o.point)) ? parseFloat(o.point) : null,
+                  price: parseFloat(o.price)
+                })).filter(o => Number.isFinite(o.price) && isSingleHomeRunOutcome(o))
+              }))
+              .filter(m => m.outcomes.length > 0)
+          }))
+      })})
+      .filter(event => event.bookmakers.length > 0);
+  } catch (e) {
+    log(`FD/DK scrape fallback failed: ${e.message}`, 'error');
+    return [];
+  }
+}
+
 async function fetchHROdds() {
-  const key = ODDS_API_KEY;
-  
-  const sport = 'baseball_mlb';
-  const market = 'batter_home_runs';
-  const region = 'us';
-  const oddsFormat = 'american';
-  
-  const bookmakers = 'betmgm,fanduel,draftkings,pointsbet,caesars,espnbet';
-  const eventsUrl = `https://api.the-odds-api.com/v4/sports/${sport}/events/?apiKey=${key}`;
+  const scrapedBetmgmEvents = await fetchBetmgmColoradoScrape();
+  const scrapedFdDkEvents = await fetchScrapedBookmakerFallback();
+  const mergedByMatchup = new Map();
 
-  const eventsRes = await fetchWithRateLimitRetry(eventsUrl, 'events list');
-
-  sessionReqs++;
-
-  const eventsRemaining = eventsRes.headers.get('x-requests-remaining');
-  if (eventsRemaining) {
-    document.getElementById('stat-remaining').textContent = `${eventsRemaining} requests remaining`;
+  for (const event of [...scrapedBetmgmEvents, ...scrapedFdDkEvents]) {
+    const key = matchupKey(event.away_team, event.home_team);
+    const existing = mergedByMatchup.get(key);
+    if (!existing) {
+      mergedByMatchup.set(key, {
+        id: event.id,
+        away_team: event.away_team,
+        home_team: event.home_team,
+        bookmakers: [...(event.bookmakers || [])]
+      });
+      continue;
+    }
+    existing.bookmakers = [...existing.bookmakers, ...(event.bookmakers || [])];
   }
 
-  const events = await eventsRes.json();
-  const eventOddsPayloads = [];
+  const mergedEvents = [...mergedByMatchup.values()].map(event => ({
+    ...event,
+    bookmakers: (event.bookmakers || [])
+      .filter(isTrackedBook)
+      .reduce((acc, book) => {
+        const key = normalizeBookKey(book);
+        if (!acc.some(existing => normalizeBookKey(existing) === key)) acc.push(book);
+        return acc;
+      }, [])
+  })).filter(event => event.bookmakers.length > 0);
 
-  for (const event of events) {
-    const eventOddsUrl = `https://api.the-odds-api.com/v4/sports/${sport}/events/${event.id}/odds/?apiKey=${key}&regions=${region}&markets=${market}&oddsFormat=${oddsFormat}&bookmakers=${bookmakers}`;
-    const eventOddsRes = await fetchWithRateLimitRetry(eventOddsUrl, `event ${event.id}`);
-
-    sessionReqs++;
-
-    const oddsRemaining = eventOddsRes.headers.get('x-requests-remaining');
-    if (oddsRemaining) {
-      document.getElementById('stat-remaining').textContent = `${oddsRemaining} requests remaining`;
-    }
-
-    const eventOdds = await eventOddsRes.json();
-    if (eventOdds?.bookmakers?.length) {
-      eventOddsPayloads.push(eventOdds);
-    }
-
-    await sleep(120);
-  }
-
+  document.getElementById('stat-remaining').textContent = 'Scrape mode (Odds API disabled)';
   document.getElementById('stat-reqs').textContent = sessionReqs;
-
-  return eventOddsPayloads;
+  log(`Scrape mode active. Loaded ${mergedEvents.length} events from co.betmgm + FD/DK scrapes.`, 'info');
+  return mergedEvents;
 }
 
 function calcEV(betmgmOdds, trueProb) {
@@ -577,6 +804,61 @@ function formatAmerican(odds) {
   const cls = odds > 0 ? 'odds-plus' : 'odds-minus';
   const str = odds > 0 ? `+${odds}` : `${odds}`;
   return `<span class="odds-chip ${cls}">${str}</span>`;
+}
+
+function renderSportsbookOdds(oddsByBook = [], bestOdds = null) {
+  if (!oddsByBook.length) return '<span style="color:var(--muted);">—</span>';
+
+  return `<div class="book-odds-list">${oddsByBook.map(bookOdd => {
+    const isBest = Number.isFinite(bestOdds) && bookOdd.odds === bestOdds;
+    return `<span class="book-odd ${isBest ? 'best' : ''}">
+      <span class="book-name">${bookOdd.book}</span>
+      ${formatAmerican(bookOdd.odds)}
+    </span>`;
+  }).join('')}</div>`;
+}
+
+function normalizePlayerKey(label) {
+  return (label || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/\b(to\s+hit\s+a?\s*home\s*run|to\s+homer|to\s+record\s+a?\s*home\s*run|home\s*runs?|home\s*run)\b/g, ' ')
+    .replace(/\b(yes|no|over|under|ou|o\/u|alt|alternate)\b/g, ' ')
+    .replace(/\b\d+(\.\d+)?\+?\b/g, ' ')
+    .replace(/[.'’`-]/g, '')
+    .replace(/\b(jr|sr|ii|iii|iv|v)\b/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function playerKeysMatch(a, b) {
+  if (!a || !b) return false;
+  if (a === b) return true;
+
+  const aTokens = a.split(' ').filter(t => t.length > 1);
+  const bTokens = b.split(' ').filter(t => t.length > 1);
+  if (!aTokens.length || !bTokens.length) return false;
+
+  const overlap = aTokens.filter(t => bTokens.includes(t)).length;
+  const minLen = Math.min(aTokens.length, bTokens.length);
+  return overlap >= minLen;
+}
+
+function getOutcomePlayerLabel(outcome) {
+  const genericNames = new Set(['yes', 'no', 'over', 'under']);
+  const name = (outcome?.name || '').trim();
+  const candidates = [outcome?.description, outcome?.participant];
+  if (name && !genericNames.has(name.toLowerCase())) candidates.push(name);
+  const firstValid = candidates.find(v => (v || '').trim().length > 0);
+  return (firstValid || name || 'Unknown').trim();
+}
+
+function getOutcomeSide(outcome) {
+  const side = (outcome?.name || '').trim().toLowerCase();
+  if (side === 'yes' || side === 'over') return 'yes';
+  if (side === 'no' || side === 'under') return 'no';
+  return null;
 }
 
 async function sendPushover(title, message) {
@@ -625,6 +907,7 @@ async function testPushover() {
 async function runScan() {
   const threshold = parseFloat(cfg('cfg-threshold')) / 100;
   const minOdds = parseFloat(cfg('cfg-min-odds'));
+  const highlightThresholdPct = 30;
   
   updateStatus('Scanning...', true);
   log('Fetching MLB HR prop odds...', 'info');
@@ -652,42 +935,84 @@ async function runScan() {
       b.key !== 'betmgm' && !b.title?.toLowerCase().includes('betmgm')
     ) || [];
     
-    const hrMarketBetMGM = betmgmBook.markets?.find(m => m.key === 'batter_home_runs');
-    if (!hrMarketBetMGM) continue;
+    const hrMarketsBetMGM = betmgmBook.markets?.filter(m => HR_MARKET_KEYS.includes(m.key)) || [];
+    if (!hrMarketsBetMGM.length) continue;
     
-    for (const outcome of hrMarketBetMGM.outcomes || []) {
-      const playerName = outcome.description || outcome.name;
+    for (const outcome of hrMarketsBetMGM.flatMap(m => m.outcomes || []).filter(isSingleHomeRunOutcome)) {
+      const playerName = getOutcomePlayerLabel(outcome);
+      const targetPlayerKey = normalizePlayerKey(playerName);
+      const targetSide = getOutcomeSide(outcome);
       const betmgmOdds = parseFloat(outcome.price);
+      const oddsByBook = [{
+        key: 'betmgm',
+        book: 'BetMGM',
+        odds: betmgmOdds
+      }];
+
+      if (!targetPlayerKey) continue;
       
       if (betmgmOdds < minOdds) continue;
       
       const marketProbs = [];
       for (const book of otherBooks) {
-        const mkt = book.markets?.find(m => m.key === 'batter_home_runs');
-        if (!mkt) continue;
-        const o = mkt.outcomes?.find(x => (x.description || x.name) === playerName);
+        const candidateOutcomes = (book.markets || [])
+          .filter(m => HR_MARKET_KEYS.includes(m.key))
+          .flatMap(m => m.outcomes || [])
+          .filter(isSingleHomeRunOutcome);
+        if (!candidateOutcomes.length) continue;
+
+        const matches = candidateOutcomes.filter(x => {
+          const bookPlayerKey = normalizePlayerKey(getOutcomePlayerLabel(x));
+          if (!bookPlayerKey || !playerKeysMatch(bookPlayerKey, targetPlayerKey)) return false;
+
+          const bookSide = getOutcomeSide(x);
+          if (targetSide && bookSide && targetSide !== bookSide) return false;
+          return true;
+        });
+        const o = matches.reduce((best, x) => {
+          const price = parseFloat(x.price);
+          if (!Number.isFinite(price)) return best;
+          if (!best) return x;
+          return price > parseFloat(best.price) ? x : best;
+        }, null);
+
         if (o) {
-          const imp = americanToImplied(parseFloat(o.price));
+          const matchedOdds = parseFloat(o.price);
+          const imp = americanToImplied(matchedOdds);
           marketProbs.push(imp);
+          oddsByBook.push({
+            key: normalizeBookKey(book),
+            book: book.title || book.key || 'Book',
+            odds: matchedOdds
+          });
         }
       }
-      
-      if (marketProbs.length < 2) continue;
-      
-      const avgVigProb = marketProbs.reduce((a, b) => a + b, 0) / marketProbs.length;
-      const trueProb = avgVigProb / (1 + (avgVigProb - 0.5) * 0.05);
-      
-      const betmgmImplied = americanToImplied(betmgmOdds);
-      const ev = calcEV(betmgmOdds, trueProb);
-      const evPct = ev * 100;
-      
-      const marketAvgOdds = (() => {
+
+      const bestOdds = oddsByBook.reduce((best, entry) => {
+        if (!Number.isFinite(entry.odds)) return best;
+        if (!Number.isFinite(best)) return entry.odds;
+        return entry.odds > best ? entry.odds : best;
+      }, Number.NEGATIVE_INFINITY);
+
+      let trueProb = null;
+      let evPct = null;
+      let marketAvgOdds = null;
+
+      if (marketProbs.length >= 2) {
+        const avgVigProb = marketProbs.reduce((a, b) => a + b, 0) / marketProbs.length;
+        trueProb = avgVigProb / (1 + (avgVigProb - 0.5) * 0.05);
+        const ev = calcEV(betmgmOdds, trueProb);
+        evPct = ev * 100;
+
         const avgImp = marketProbs.reduce((a,b)=>a+b,0)/marketProbs.length;
-        if (avgImp <= 0) return 0;
-        return Math.round(avgImp >= 0.5
-          ? -(avgImp / (1 - avgImp)) * 100
-          : ((1 - avgImp) / avgImp) * 100);
-      })();
+        if (avgImp > 0) {
+          marketAvgOdds = Math.round(avgImp >= 0.5
+            ? -(avgImp / (1 - avgImp)) * 100
+            : ((1 - avgImp) / avgImp) * 100);
+        }
+      }
+
+      const betmgmImplied = americanToImplied(betmgmOdds);
       
       evBets.push({
         player: playerName,
@@ -697,24 +1022,36 @@ async function runScan() {
         betmgmImplied,
         trueProb,
         evPct,
-        isPositive: evPct >= threshold * 100,
+        oddsByBook,
+        bestOdds: Number.isFinite(bestOdds) ? bestOdds : null,
+        isPositive: Number.isFinite(evPct) && evPct >= threshold * 100,
+        isFivePlusEv: Number.isFinite(evPct) && evPct >= highlightThresholdPct,
         key: `${playerName}-${betmgmOdds}-${game.id}`
       });
     }
   }
   
-  evBets.sort((a, b) => b.evPct - a.evPct);
+  evBets.sort((a, b) => {
+    const aPriority = a.isFivePlusEv ? 1 : 0;
+    const bPriority = b.isFivePlusEv ? 1 : 0;
+    if (aPriority !== bPriority) return bPriority - aPriority;
+
+    const aEv = Number.isFinite(a.evPct) ? a.evPct : -Infinity;
+    const bEv = Number.isFinite(b.evPct) ? b.evPct : -Infinity;
+    return bEv - aEv;
+  });
   
   const posCount = evBets.filter(b => b.isPositive).length;
   sessionEvCount += posCount;
   document.getElementById('stat-ev').textContent = sessionEvCount;
+  const booksSeen = [...new Set(evBets.flatMap(b => (b.oddsByBook || []).map(o => o.key)))];
   
   renderTable(evBets);
   
   const now = new Date().toLocaleTimeString();
   document.getElementById('last-scan').textContent = `Last scan: ${now} — ${evBets.length} players found`;
   
-  log(`Scan complete. ${evBets.length} players evaluated, ${posCount} +EV opportunities found.`, posCount > 0 ? 'success' : 'info');
+  log(`Scan complete. ${evBets.length} players evaluated, ${posCount} +EV opportunities found. Books seen: ${booksSeen.join(', ') || 'none'}.`, posCount > 0 ? 'success' : 'info');
   
   for (const bet of evBets.filter(b => b.isPositive)) {
     if (!lastAlertedKeys.has(bet.key)) {
@@ -737,27 +1074,31 @@ async function runScan() {
 function renderTable(bets) {
   const tbody = document.getElementById('ev-tbody');
   if (bets.length === 0) {
-    tbody.innerHTML = `<tr><td colspan="8"><div class="empty-state"><div class="icon">⚾</div><p>No home run props found for today's games.</p></div></td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="9"><div class="empty-state"><div class="icon">⚾</div><p>No home run props found for today's games.</p></div></td></tr>`;
     return;
   }
   
   tbody.innerHTML = bets.map(b => {
-    const evClass = b.evPct >= 0 ? 'ev-pos' : 'ev-neg';
-    const evSign = b.evPct >= 0 ? '+' : '';
-    const rowStyle = b.isPositive ? 'background:rgba(61,240,160,0.04);' : '';
+    const hasEv = Number.isFinite(b.evPct);
+    const evClass = hasEv && b.evPct >= 0 ? 'ev-pos' : 'ev-neg';
+    const evSign = hasEv && b.evPct >= 0 ? '+' : '';
+    const rowStyle = b.isFivePlusEv ? 'background:rgba(61,240,160,0.10);' : '';
+    const statusBadge = !hasEv
+      ? `<span class="badge badge-warn">Waiting for market</span>`
+      : b.isFivePlusEv
+        ? `<span class="badge badge-green">+30% EV</span>`
+        : `<span class="badge badge-red">Below +30%</span>`;
     return `
       <tr style="${rowStyle}">
-        <td style="font-weight:500;">${b.player}${b.isPositive ? ' <span class="badge badge-green">+EV</span>' : ''}</td>
-        <td style="color:var(--muted);font-size:12px;">${b.game}</td>
-        <td>${formatAmerican(b.betmgmOdds)} <span class="tag-betmgm">BetMGM</span></td>
-        <td>${formatAmerican(b.marketAvgOdds)}</td>
-        <td>${(b.betmgmImplied * 100).toFixed(1)}%</td>
-        <td>${(b.trueProb * 100).toFixed(1)}%</td>
-        <td class="ev-val ${evClass}">${evSign}${b.evPct.toFixed(1)}%</td>
-        <td>${b.isPositive
-          ? `<span class="badge badge-green">Bet it</span>`
-          : `<span class="badge badge-red">Skip</span>`
-        }</td>
+        <td data-label="Player" style="font-weight:500;">${b.player}${b.isFivePlusEv ? ' <span class="badge badge-green">+30% EV</span>' : ''}</td>
+        <td data-label="Game" style="color:var(--muted);font-size:12px;">${b.game}</td>
+        <td data-label="Sportsbook Odds">${renderSportsbookOdds(b.oddsByBook, b.bestOdds)}</td>
+        <td data-label="BetMGM Odds">${formatAmerican(b.betmgmOdds)} <span class="tag-betmgm">BetMGM</span></td>
+        <td data-label="Market Avg">${b.marketAvgOdds !== null ? formatAmerican(b.marketAvgOdds) : '<span style="color:var(--muted);">—</span>'}</td>
+        <td data-label="BetMGM Implied">${(b.betmgmImplied * 100).toFixed(1)}%</td>
+        <td data-label="True Prob">${b.trueProb !== null ? `${(b.trueProb * 100).toFixed(1)}%` : '<span style="color:var(--muted);">—</span>'}</td>
+        <td data-label="EV%" class="ev-val ${evClass}">${hasEv ? `${evSign}${b.evPct.toFixed(1)}%` : '<span style="color:var(--muted);">N/A</span>'}</td>
+        <td data-label="Status">${statusBadge}</td>
       </tr>`;
   }).join('');
 }
