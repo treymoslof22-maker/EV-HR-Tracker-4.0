@@ -559,50 +559,60 @@ async function fetchScrapePayload(action, extraParams = {}) {
   const workerUrl = cfg('cfg-worker-url') || CLOUDFLARE_WORKER_URL;
   if (!workerUrl) return null;
 
-  const params = { action, ...extraParams };
-  const query = new URLSearchParams(params).toString();
   const rootUrl = workerUrl.replace(/\/+$/, '');
-  const actionPath = `${rootUrl}/${action}`;
-  const actionPathWithQuery = `${actionPath}?${new URLSearchParams(extraParams).toString()}`;
-  const attempts = [
-    {
-      label: 'GET',
-      url: `${workerUrl}${workerUrl.includes('?') ? '&' : '?'}${query}`,
-      options: { method: 'GET' }
-    },
-    {
-      label: 'GET path',
-      url: actionPathWithQuery,
-      options: { method: 'GET' }
-    },
-    {
-      label: 'POST form',
-      url: workerUrl,
-      options: {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: query
+  const actionVariants = [...new Set([
+    action,
+    action.replace(/_/g, '-'),
+    action.replace(/_/g, ''),
+    action.replace(/_([a-z])/g, (_, c) => c.toUpperCase())
+  ])];
+  const attempts = [];
+
+  for (const actionName of actionVariants) {
+    const params = { action: actionName, ...extraParams };
+    const query = new URLSearchParams(params).toString();
+    const actionPath = `${rootUrl}/${actionName}`;
+    const actionPathWithQuery = `${actionPath}?${new URLSearchParams(extraParams).toString()}`;
+    attempts.push(
+      {
+        label: `GET(${actionName})`,
+        url: `${workerUrl}${workerUrl.includes('?') ? '&' : '?'}${query}`,
+        options: { method: 'GET' }
+      },
+      {
+        label: `GET path(${actionName})`,
+        url: actionPathWithQuery,
+        options: { method: 'GET' }
+      },
+      {
+        label: `POST form(${actionName})`,
+        url: workerUrl,
+        options: {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: query
+        }
+      },
+      {
+        label: `POST json(${actionName})`,
+        url: workerUrl,
+        options: {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(params)
+        }
+      },
+      {
+        label: `POST path json(${actionName})`,
+        url: actionPath,
+        options: {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(extraParams)
+        }
       }
-    },
-    {
-      label: 'POST json',
-      url: workerUrl,
-      options: {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(params)
-      }
-    },
-    {
-      label: 'POST path json',
-      url: actionPath,
-      options: {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(extraParams)
-      }
-    }
-  ];
+    );
+  }
 
   const failures = [];
   for (const attempt of attempts) {
@@ -706,7 +716,11 @@ async function fetchWithRateLimitRetry(url, contextLabel, maxAttempts = 4) {
 
 async function fetchBetmgmColoradoScrape() {
   try {
-    const payload = await fetchScrapePayload('scrape_betmgm_co_hr');
+    const payload = await fetchScrapePayload('scrape_betmgm_co_hr', {
+      sport: 'baseball_mlb',
+      market: 'batter_home_runs',
+      state: 'co'
+    });
     if (!payload) return [];
     const events = extractScrapedEvents(payload);
     if (events.length === 0) log('co.betmgm scrape returned no parsable events payload.', 'error');
@@ -748,7 +762,9 @@ async function fetchBetmgmColoradoScrape() {
 async function fetchScrapedBookmakerFallback() {
   try {
     const payload = await fetchScrapePayload('scrape_hr_props', {
-      books: SCRAPE_FALLBACK_BOOKMAKERS.join(',')
+      books: SCRAPE_FALLBACK_BOOKMAKERS.join(','),
+      sport: 'baseball_mlb',
+      market: 'batter_home_runs'
     });
     if (!payload) return [];
     const events = extractScrapedEvents(payload);
