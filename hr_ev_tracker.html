@@ -579,6 +579,31 @@ function formatAmerican(odds) {
   return `<span class="odds-chip ${cls}">${str}</span>`;
 }
 
+function normalizePlayerKey(label) {
+  return (label || '')
+    .toLowerCase()
+    .replace(/[.'’`-]/g, '')
+    .replace(/\b(jr|sr|ii|iii|iv|v)\b/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function getOutcomePlayerLabel(outcome) {
+  const genericNames = new Set(['yes', 'no', 'over', 'under']);
+  const name = (outcome?.name || '').trim();
+  const candidates = [outcome?.description, outcome?.participant];
+  if (name && !genericNames.has(name.toLowerCase())) candidates.push(name);
+  const firstValid = candidates.find(v => (v || '').trim().length > 0);
+  return (firstValid || name || 'Unknown').trim();
+}
+
+function getOutcomeSide(outcome) {
+  const side = (outcome?.name || '').trim().toLowerCase();
+  if (side === 'yes' || side === 'over') return 'yes';
+  if (side === 'no' || side === 'under') return 'no';
+  return null;
+}
+
 async function sendPushover(title, message) {
   const workerUrl = CLOUDFLARE_WORKER_URL;
   const userKey = PUSHOVER_USER_KEY;
@@ -657,8 +682,12 @@ async function runScan() {
     if (!hrMarketBetMGM) continue;
     
     for (const outcome of hrMarketBetMGM.outcomes || []) {
-      const playerName = outcome.description || outcome.name;
+      const playerName = getOutcomePlayerLabel(outcome);
+      const targetPlayerKey = normalizePlayerKey(playerName);
+      const targetSide = getOutcomeSide(outcome);
       const betmgmOdds = parseFloat(outcome.price);
+
+      if (!targetPlayerKey) continue;
       
       if (betmgmOdds < minOdds) continue;
       
@@ -666,7 +695,14 @@ async function runScan() {
       for (const book of otherBooks) {
         const mkt = book.markets?.find(m => m.key === 'batter_home_runs');
         if (!mkt) continue;
-        const o = mkt.outcomes?.find(x => (x.description || x.name) === playerName);
+        const o = mkt.outcomes?.find(x => {
+          const bookPlayerKey = normalizePlayerKey(getOutcomePlayerLabel(x));
+          if (!bookPlayerKey || bookPlayerKey !== targetPlayerKey) return false;
+
+          const bookSide = getOutcomeSide(x);
+          if (targetSide && bookSide && targetSide !== bookSide) return false;
+          return true;
+        });
         if (o) {
           const imp = americanToImplied(parseFloat(o.price));
           marketProbs.push(imp);
