@@ -484,6 +484,16 @@ function isTrackedBook(book) {
   return TRACKED_BOOKMAKERS.includes(normalizeBookKey(book));
 }
 
+function isSingleHomeRunOutcome(outcome) {
+  const point = parseFloat(outcome?.point);
+  if (Number.isFinite(point)) return point <= 0.5;
+
+  const text = `${outcome?.name || ''} ${outcome?.description || ''} ${outcome?.label || ''}`.toLowerCase();
+  if (/\b[2-9]\+\b/.test(text)) return false;
+  if (/(over|under)\s*[1-9]\.5/.test(text)) return false;
+  return true;
+}
+
 function cfg(id) { return document.getElementById(id).value.trim(); }
 document.getElementById('cfg-worker-url').value = CLOUDFLARE_WORKER_URL;
 document.getElementById('cfg-odds-key').value = ODDS_API_KEY;
@@ -586,8 +596,9 @@ async function fetchScrapedBookmakerFallback(eventId) {
               name: o.name,
               description: o.description,
               participant: o.participant,
+              point: Number.isFinite(parseFloat(o.point)) ? parseFloat(o.point) : null,
               price: parseFloat(o.price)
-            })).filter(o => Number.isFinite(o.price))
+            })).filter(o => Number.isFinite(o.price) && isSingleHomeRunOutcome(o))
           }))
       }))
       .filter(book => book.markets.some(m => m.outcomes.length > 0));
@@ -802,7 +813,7 @@ async function runScan() {
     const hrMarketsBetMGM = betmgmBook.markets?.filter(m => HR_MARKET_KEYS.includes(m.key)) || [];
     if (!hrMarketsBetMGM.length) continue;
     
-    for (const outcome of hrMarketsBetMGM.flatMap(m => m.outcomes || [])) {
+    for (const outcome of hrMarketsBetMGM.flatMap(m => m.outcomes || []).filter(isSingleHomeRunOutcome)) {
       const playerName = getOutcomePlayerLabel(outcome);
       const targetPlayerKey = normalizePlayerKey(playerName);
       const targetSide = getOutcomeSide(outcome);
@@ -821,7 +832,8 @@ async function runScan() {
       for (const book of otherBooks) {
         const candidateOutcomes = (book.markets || [])
           .filter(m => HR_MARKET_KEYS.includes(m.key))
-          .flatMap(m => m.outcomes || []);
+          .flatMap(m => m.outcomes || [])
+          .filter(isSingleHomeRunOutcome);
         if (!candidateOutcomes.length) continue;
 
         const matches = candidateOutcomes.filter(x => {
