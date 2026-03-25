@@ -466,7 +466,7 @@ const CLOUDFLARE_WORKER_URL = 'https://super-art-7372.treymoslof22.workers.dev/'
 const ODDS_API_KEY = '91ec431ed0b88f3d8e48b719db1ae368';
 const PUSHOVER_APP_TOKEN = 'az6pk9ipdjj11rqkz7x1kfi28f9ppk';
 const PUSHOVER_USER_KEY = 'u8s29a84uwrrtidoieqj1izetdeq59';
-const TRACKED_BOOKMAKERS = ['betmgm', 'fanduel', 'draftkings', 'fanatics', 'hardrockbet'];
+const TRACKED_BOOKMAKERS = ['betmgm', 'fanduel', 'draftkings'];
 const SCRAPE_FALLBACK_BOOKMAKERS = ['fanduel', 'draftkings'];
 const HR_MARKET_KEYS = ['batter_home_runs', 'batter_home_runs_alternate'];
 
@@ -482,6 +482,10 @@ function normalizeBookKey(book) {
 
 function isTrackedBook(book) {
   return TRACKED_BOOKMAKERS.includes(normalizeBookKey(book));
+}
+
+function matchupKey(awayTeam, homeTeam) {
+  return `${(awayTeam || '').toLowerCase().trim()}@@${(homeTeam || '').toLowerCase().trim()}`;
 }
 
 function isSingleHomeRunOutcome(outcome) {
@@ -568,6 +572,51 @@ async function fetchWithRateLimitRetry(url, contextLabel, maxAttempts = 4) {
   throw new Error(`Odds API rate-limit retry failed${contextLabel ? ` for ${contextLabel}` : ''}: ${lastErrorText}`);
 }
 
+async function fetchBetmgmColoradoScrape() {
+  const workerUrl = cfg('cfg-worker-url') || CLOUDFLARE_WORKER_URL;
+  if (!workerUrl) return [];
+
+  const url = new URL(workerUrl);
+  url.searchParams.set('action', 'scrape_betmgm_co_hr');
+
+  try {
+    const res = await fetch(url.toString());
+    if (!res.ok) return [];
+    const payload = await res.json();
+    const events = Array.isArray(payload?.events) ? payload.events : [];
+
+    return events
+      .map(event => ({
+        id: event.id || `${event.away_team || 'away'}-${event.home_team || 'home'}`,
+        away_team: event.away_team,
+        home_team: event.home_team,
+        bookmakers: (event.bookmakers || [])
+          .filter(book => normalizeBookKey(book) === 'betmgm')
+          .map(book => ({
+            key: 'betmgm',
+            title: book.title || 'BetMGM Colorado',
+            markets: (book.markets || [])
+              .filter(m => HR_MARKET_KEYS.includes(m?.key))
+              .map(m => ({
+                key: m.key,
+                outcomes: (m.outcomes || []).map(o => ({
+                  name: o.name,
+                  description: o.description,
+                  participant: o.participant,
+                  point: Number.isFinite(parseFloat(o.point)) ? parseFloat(o.point) : null,
+                  price: parseFloat(o.price)
+                })).filter(o => Number.isFinite(o.price) && isSingleHomeRunOutcome(o))
+              }))
+              .filter(m => m.outcomes.length > 0)
+          }))
+      }))
+      .filter(event => event.bookmakers.length > 0);
+  } catch (e) {
+    log(`BetMGM CO scrape failed: ${e.message}`, 'error');
+    return [];
+  }
+}
+
 async function fetchScrapedBookmakerFallback(eventId) {
   const workerUrl = cfg('cfg-worker-url') || CLOUDFLARE_WORKER_URL;
   if (!workerUrl) return [];
@@ -584,9 +633,9 @@ async function fetchScrapedBookmakerFallback(eventId) {
     const books = Array.isArray(payload?.bookmakers) ? payload.bookmakers : [];
 
     return books
-      .filter(book => SCRAPE_FALLBACK_BOOKMAKERS.includes(book?.key))
+      .filter(book => SCRAPE_FALLBACK_BOOKMAKERS.includes(normalizeBookKey(book)))
       .map(book => ({
-        key: book.key,
+        key: normalizeBookKey(book),
         title: book.title || book.key,
         markets: (book.markets || [])
           .filter(m => HR_MARKET_KEYS.includes(m?.key))
@@ -600,16 +649,21 @@ async function fetchScrapedBookmakerFallback(eventId) {
               price: parseFloat(o.price)
             })).filter(o => Number.isFinite(o.price) && isSingleHomeRunOutcome(o))
           }))
+          .filter(m => m.outcomes.length > 0)
       }))
-      .filter(book => book.markets.some(m => m.outcomes.length > 0));
+      .filter(book => book.markets.length > 0);
   } catch (e) {
-    log(`Scrape fallback failed for event ${eventId}: ${e.message}`, 'error');
+    log(`FD/DK scrape fallback failed for event ${eventId}: ${e.message}`, 'error');
     return [];
   }
 }
 
 async function fetchHROdds() {
   const key = ODDS_API_KEY;
+  const scrapedBetmgmEvents = await fetchBetmgmColoradoScrape();
+  const betmgmScrapeByMatchup = new Map(
+    scrapedBetmgmEvents.map(event => [matchupKey(event.away_team, event.home_team), event])
+  );
   
   const sport = 'baseball_mlb';
   const market = HR_MARKET_KEYS.join(',');
@@ -631,7 +685,7 @@ async function fetchHROdds() {
   const eventOddsPayloads = [];
 
   for (const event of events) {
-    const eventOddsUrl = `https://api.the-odds-api.com/v4/sports/${sport}/events/${event.id}/odds/?apiKey=${key}&regions=${region}&markets=${market}&oddsFormat=${oddsFormat}`;
+    const eventOddsUrl = `https://api.the-odds-api.com/v4/sports/${sport}/events/${event.id}/odds/?apiKey=${key}&regions=${region}&markets=${market}&oddsFormat=${oddsFormat}&bookmakers=betmgm,fanduel,draftkings`;
     const eventOddsRes = await fetchWithRateLimitRetry(eventOddsUrl, `event ${event.id}`);
 
     sessionReqs++;
@@ -644,14 +698,22 @@ async function fetchHROdds() {
     const eventOdds = await eventOddsRes.json();
     eventOdds.bookmakers = (eventOdds.bookmakers || []).filter(isTrackedBook);
 
-    const missingFallbackBooks = SCRAPE_FALLBACK_BOOKMAKERS.filter(key =>
-      !eventOdds?.bookmakers?.some(b => normalizeBookKey(b) === key)
-    );
+    const hasBetmgm = eventOdds.bookmakers.some(b => normalizeBookKey(b) === 'betmgm');
+    if (!hasBetmgm) {
+      const scrapedMatch = betmgmScrapeByMatchup.get(matchupKey(eventOdds.away_team, eventOdds.home_team));
+      if (scrapedMatch?.bookmakers?.length) {
+        eventOdds.bookmakers = [...eventOdds.bookmakers, ...scrapedMatch.bookmakers];
+        log(`Added co.betmgm scraped odds for ${eventOdds.away_team} @ ${eventOdds.home_team}.`, 'info');
+      }
+    }
 
+    const missingFallbackBooks = SCRAPE_FALLBACK_BOOKMAKERS.filter(bookKey =>
+      !eventOdds.bookmakers.some(b => normalizeBookKey(b) === bookKey)
+    );
     if (missingFallbackBooks.length > 0) {
-      const scrapedBooks = await fetchScrapedBookmakerFallback(event.id);
-      if (scrapedBooks.length > 0) {
-        eventOdds.bookmakers = [...(eventOdds.bookmakers || []), ...scrapedBooks];
+      const scrapedFallbackBooks = await fetchScrapedBookmakerFallback(event.id);
+      if (scrapedFallbackBooks.length > 0) {
+        eventOdds.bookmakers = [...eventOdds.bookmakers, ...scrapedFallbackBooks];
         log(`Added scraped fallback odds for ${missingFallbackBooks.join(', ')} on event ${event.id}.`, 'info');
       }
     }
@@ -661,6 +723,11 @@ async function fetchHROdds() {
     }
 
     await sleep(120);
+  }
+
+  if (eventOddsPayloads.length === 0 && scrapedBetmgmEvents.length > 0) {
+    log('Odds API returned no tracked books; using co.betmgm scraped events only.', 'info');
+    return scrapedBetmgmEvents;
   }
 
   document.getElementById('stat-reqs').textContent = sessionReqs;
